@@ -2,11 +2,12 @@
 import urllib2
 from bs4 import BeautifulSoup
 import mysql.connector as MySQLdb
+import os
 
 DATABASE = {
     'user': "root",
     'password': '',
-    'database': "elections2",
+    'database': "elections",
     'host': '',
 }
 
@@ -20,7 +21,7 @@ def get_soup(url):
     page = urllib2.urlopen(url).read()
     page = page.decode('cp1251').encode('utf8')
     soup = BeautifulSoup(page)
-    return soup
+    return soup, page
 
 def prepare_tables():
     q = "drop table if exists elections;"
@@ -66,22 +67,15 @@ def save_row(district_id, row_num, value):
     db.commit()
     return con.lastrowid
 
-con, db = get_db_connection()
-prepare_tables()
+def save_page(election_id, title, page):
+    mo = ''
+    if election_id > 1:
+        mo = 'mo/'
+    name = "downloads/%s%s.html" % (mo, title)
+    with open(name, "w") as f:
+        f.write(page)
 
-url = 'http://www.st-petersburg.vybory.izbirkom.ru/region/st-petersburg/'
-soup = get_soup(url)
-
-res = soup.find('td', {'class': 'resultsCount'})
-text = res.text
-assert text.startswith(u'Всего найдено записей:')
-
-blabla, num = text.split(':')
-num = int(num)
-links = soup.findAll('a', {'class': 'vibLink'})
-assert len(links) == num
-
-def parse_table(election_id, soup, parent_id=None, href=None):
+def parse_table(election_id, soup, parent_id=None, href=None, page=None):
     data_table = soup.findAll('table', {'style': 'width:100%;border-color:#000000'})
     tables = data_table[0].findAll('table')
     table = tables[1]
@@ -103,6 +97,7 @@ def parse_table(election_id, soup, parent_id=None, href=None):
                     text = td.nobr.text
 
                 d_id = save_district(election_id, text, href, parent_id)
+                save_page(election_id, text, page)
                 districts.append({'id': d_id, 'href': href})
             else:
                 district_id = districts[td_id]['id']
@@ -120,22 +115,42 @@ def parse_table(election_id, soup, parent_id=None, href=None):
         row_num += 1
     return districts
 
+for directory in ('downloads', 'downloads/mo'):
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+con, db = get_db_connection()
+prepare_tables()
+
+url = 'http://www.st-petersburg.vybory.izbirkom.ru/region/st-petersburg/'
+soup, page = get_soup(url)
+
+res = soup.find('td', {'class': 'resultsCount'})
+text = res.text
+assert text.startswith(u'Всего найдено записей:')
+
+blabla, num = text.split(':')
+num = int(num)
+links = soup.findAll('a', {'class': 'vibLink'})
+assert len(links) == num
 
 for link in links:
     election_id = save_election(link.text, link['href'])
 
-    soup = get_soup(link['href'])
+    soup, page = get_soup(link['href'])
     links = soup.findAll('a')
     l = links[len(links)-1]
     mode = None
-    if l.text == u'Сводная таблица предварительных итогов голосования':
+    print l.text
+    if l.text == u'Сводная таблица предварительных итогов голосования' or \
+            l.text == u'Сводная таблица результатов выборов':
         mode = 1
     if l.text == u'Сводная таблица предварительных итогов голосования по одномандатному (многомандатному) округу':
         mode = 2
     if not mode:
         raise
 
-    soup = get_soup(l['href'])
+    soup, page = get_soup(l['href'])
     if mode == 2:
         options = soup.findAll('option')
         for option in options:
@@ -144,11 +159,11 @@ for link in links:
             except:
                 continue
             print '-->' ,option['value']
-            soup = get_soup(option['value'])
-            parse_table(election_id, soup, href=option['value'])
+            soup, page = get_soup(option['value'])
+            parse_table(election_id, soup, href=option['value'], page=page)
     else:
-        subdistricts = parse_table(election_id, soup)
+        subdistricts = parse_table(election_id, soup, page=page)
         for sub in subdistricts:
             print sub['href']
-            soup = get_soup(sub['href'])
-            parse_table(election_id, soup, sub['id'], href=sub['href'])
+            soup, page = get_soup(sub['href'])
+            parse_table(election_id, soup, sub['id'], href=sub['href'], page=page)
